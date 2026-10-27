@@ -14,7 +14,7 @@ fn provider(fixture: &Fixture) -> GithubProvider {
 fn inbox_rollup_v1_query_is_exact_and_ordered() {
     assert_eq!(
         inbox_rollup_query_v1(&[("org/alpha", 7), ("org/beta", 9)]),
-        "query{p0:repository(owner:\"org\",name:\"alpha\"){pullRequest(number:7){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewRequests(first:10){nodes{requestedReviewer{__typename ...on User{login} ...on Bot{login} ...on Mannequin{login} ...on Team{combinedSlug}}}} latestReviews(first:10){nodes{state author{__typename login}}} comments(last:20){nodes{author{__typename login}}}}} p1:repository(owner:\"org\",name:\"beta\"){pullRequest(number:9){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewRequests(first:10){nodes{requestedReviewer{__typename ...on User{login} ...on Bot{login} ...on Mannequin{login} ...on Team{combinedSlug}}}} latestReviews(first:10){nodes{state author{__typename login}}} comments(last:20){nodes{author{__typename login}}}}}}"
+        "query{p0:repository(owner:\"org\",name:\"alpha\"){pullRequest(number:7){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewRequests(first:10){nodes{requestedReviewer{__typename ...on Actor{login} ...on Team{combinedSlug}}}} latestReviews(first:10){nodes{state author{__typename login}}} comments(last:20){nodes{author{__typename login}}}}} p1:repository(owner:\"org\",name:\"beta\"){pullRequest(number:9){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewRequests(first:10){nodes{requestedReviewer{__typename ...on Actor{login} ...on Team{combinedSlug}}}} latestReviews(first:10){nodes{state author{__typename login}}} comments(last:20){nodes{author{__typename login}}}}}}"
     );
     let args = inbox_rollup_args_v1("github.invalid", &[("org/alpha", 7)]);
     assert_eq!(
@@ -93,6 +93,8 @@ fn inbox_rollup_v1_lists_reviewers_requests_and_commenters_once_each() {
     let rows = parse_inbox_rollup_v1(&targets, &response).unwrap();
     let seen: Vec<(&str, &str, ReviewerRoleV1)> = rows[0]
         .reviewers
+        .as_ref()
+        .unwrap()
         .iter()
         .map(|r| (r.actor.login.as_str(), r.actor.actor_type.as_str(), r.role))
         .collect();
@@ -107,8 +109,42 @@ fn inbox_rollup_v1_lists_reviewers_requests_and_commenters_once_each() {
             ("dave", "User", ReviewerRoleV1::Commented),
         ]
     );
-    // A PR read without the reviewer fields (older fixtures) simply has none.
-    assert!(rows[1].reviewers.is_empty());
+    // A PR answered without the reviewer fields (older fixtures) simply has none.
+    assert_eq!(rows[1].reviewers, Some(Vec::new()));
+}
+
+#[test]
+fn inbox_rollup_v1_falls_back_to_status_only_when_the_server_rejects_reviewer_fields() {
+    let fixture = Fixture::new();
+    let targets = [("org/alpha", 7)];
+    let full = inbox_rollup_args_v1("github.invalid", &targets);
+    let full: Vec<&str> = full.iter().map(String::as_str).collect();
+    let status = inbox_rollup_status_args_v1("github.invalid", &targets);
+    let status: Vec<&str> = status.iter().map(String::as_str).collect();
+    // The status-only document is the pre-reviewer query, byte for byte.
+    assert_eq!(
+        inbox_rollup_status_query_v1(&targets),
+        "query{p0:repository(owner:\"org\",name:\"alpha\"){pullRequest(number:7){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}}}}"
+    );
+    let mut rejected = GhStep::read(&full, "");
+    rejected.status = 1;
+    rejected.stderr = b"gh: Fragment on Bot can't be spread inside RequestedReviewer\n".to_vec();
+    fixture.scripted_gh(&[
+        rejected,
+        GhStep::read(
+            &status,
+            r#"{"data":{"p0":{"pullRequest":{"reviewDecision":"APPROVED","commits":{"nodes":[{"commit":{"oid":"abc","statusCheckRollup":{"state":"SUCCESS"}}}]}}}}}"#,
+        ),
+    ]);
+    let rows = provider(&fixture)
+        .inbox_rollup_v1(&targets, &CancellationToken::default())
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].review_decision.as_deref(), Some("APPROVED"));
+    assert_eq!(rows[0].check_state.as_deref(), Some("SUCCESS"));
+    // Reviewers were not read, which is not the same as "nobody".
+    assert_eq!(rows[0].reviewers, None);
+    assert_eq!(journal_lines(&fixture), 2);
 }
 
 #[test]

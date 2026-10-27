@@ -1938,7 +1938,10 @@ impl GithubWorkspace {
                 };
                 self.inbox_rollup_v1
                     .insert(key.clone(), RowStatus::from_rollup_v1(&row, updated_at));
-                self.inbox_reviewers_v1.insert(key, row.reviewers);
+                match row.reviewers {
+                    Some(reviewers) => self.inbox_reviewers_v1.insert(key, reviewers),
+                    None => self.inbox_reviewers_v1.remove(&key),
+                };
             }
         }
     }

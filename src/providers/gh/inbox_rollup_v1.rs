@@ -64,15 +64,32 @@ pub struct InboxRollupV1 {
     /// `SUCCESS`, `FAILURE`, `ERROR`, `PENDING`, `EXPECTED`, or `None` without any check.
     pub check_state: Option<String>,
     pub head_oid: String,
-    /// Reviews first, then pending requests, then commenters; one entry per login.
-    pub reviewers: Vec<InboxReviewerV1>,
+    /// Reviews first, then pending requests, then commenters; one entry per login. `None`
+    /// when the status-only fallback answered and reviewers were not read.
+    pub reviewers: Option<Vec<InboxReviewerV1>>,
 }
 
 /// The exact GraphQL document for `targets`, in the order given.
 pub fn inbox_rollup_query_v1(targets: &[(&str, u64)]) -> String {
-    let fields = format!(
-        "reviewRequests(first:{INBOX_REVIEWERS_FIRST_V1}){{nodes{{requestedReviewer{{__typename ...on User{{login}} ...on Bot{{login}} ...on Mannequin{{login}} ...on Team{{combinedSlug}}}}}}}} latestReviews(first:{INBOX_REVIEWERS_FIRST_V1}){{nodes{{state author{{__typename login}}}}}} comments(last:{INBOX_COMMENTERS_LAST_V1}){{nodes{{author{{__typename login}}}}}}"
-    );
+    rollup_query(targets, true)
+}
+
+/// The same document without the reviewer fields: the fallback for a server whose schema
+/// rejects them (an older GitHub Enterprise Server), so the status column still loads.
+pub fn inbox_rollup_status_query_v1(targets: &[(&str, u64)]) -> String {
+    rollup_query(targets, false)
+}
+
+fn rollup_query(targets: &[(&str, u64)], with_reviewers: bool) -> String {
+    // `...on Actor` rather than one fragment per type: servers differ in which actor types
+    // `RequestedReviewer` includes (GHES 3.9 and 3.10 have no `Bot`).
+    let fields = if !with_reviewers {
+        String::new()
+    } else {
+        format!(
+            " reviewRequests(first:{INBOX_REVIEWERS_FIRST_V1}){{nodes{{requestedReviewer{{__typename ...on Actor{{login}} ...on Team{{combinedSlug}}}}}}}} latestReviews(first:{INBOX_REVIEWERS_FIRST_V1}){{nodes{{state author{{__typename login}}}}}} comments(last:{INBOX_COMMENTERS_LAST_V1}){{nodes{{author{{__typename login}}}}}}"
+        )
+    };
     let mut query = String::from("query{");
     for (index, (repository, number)) in targets.iter().enumerate() {
         let (owner, name) = repository.split_once('/').unwrap_or((repository, ""));
@@ -80,7 +97,7 @@ pub fn inbox_rollup_query_v1(targets: &[(&str, u64)]) -> String {
             query.push(' ');
         }
         query.push_str(&format!(
-            "p{index}:repository(owner:\"{owner}\",name:\"{name}\"){{pullRequest(number:{number}){{reviewDecision commits(last:1){{nodes{{commit{{oid statusCheckRollup{{state}}}}}}}} {fields}}}}}"
+            "p{index}:repository(owner:\"{owner}\",name:\"{name}\"){{pullRequest(number:{number}){{reviewDecision commits(last:1){{nodes{{commit{{oid statusCheckRollup{{state}}}}}}}}{fields}}}}}"
         ));
     }
     query.push('}');
@@ -89,13 +106,22 @@ pub fn inbox_rollup_query_v1(targets: &[(&str, u64)]) -> String {
 
 /// The exact `gh` argv for one batch.
 pub fn inbox_rollup_args_v1(host: &str, targets: &[(&str, u64)]) -> Vec<String> {
+    graphql_args(host, inbox_rollup_query_v1(targets))
+}
+
+/// The exact `gh` argv for one batch's status-only fallback.
+pub fn inbox_rollup_status_args_v1(host: &str, targets: &[(&str, u64)]) -> Vec<String> {
+    graphql_args(host, inbox_rollup_status_query_v1(targets))
+}
+
+fn graphql_args(host: &str, query: String) -> Vec<String> {
     vec![
         "api".into(),
         "graphql".into(),
         "--hostname".into(),
         host.into(),
         "-f".into(),
-        format!("query={}", inbox_rollup_query_v1(targets)),
+        format!("query={query}"),
     ]
 }
 
@@ -177,6 +203,14 @@ pub fn parse_inbox_rollup_v1(
     targets: &[(&str, u64)],
     response: &Value,
 ) -> GithubResult<Vec<InboxRollupV1>> {
+    parse_rollup(targets, response, true)
+}
+
+fn parse_rollup(
+    targets: &[(&str, u64)],
+    response: &Value,
+    with_reviewers: bool,
+) -> GithubResult<Vec<InboxRollupV1>> {
     let data = response
         .get("data")
         .filter(|data| data.is_object())
@@ -197,14 +231,15 @@ pub fn parse_inbox_rollup_v1(
             review_decision: text(pr.get("reviewDecision")),
             check_state: text(commit.and_then(|c| c.pointer("/statusCheckRollup/state"))),
             head_oid: text(commit.and_then(|c| c.get("oid"))).unwrap_or_default(),
-            reviewers: reviewers(pr),
+            reviewers: with_reviewers.then(|| reviewers(pr)),
         });
     }
     Ok(rows)
 }
 
 impl GithubProvider {
-    /// One batch (at most [`INBOX_ROLLUP_BATCH_V1`] PRs). Read-only.
+    /// One batch (at most [`INBOX_ROLLUP_BATCH_V1`] PRs). Read-only. If the server rejects
+    /// the document's fields, one status-only retry keeps the review and check states loading.
     pub fn inbox_rollup_v1(
         &self,
         targets: &[(&str, u64)],
@@ -228,15 +263,24 @@ impl GithubProvider {
                 ));
             }
         }
-        let bytes = self.execute(
-            inbox_rollup_args_v1(&self.host, targets),
-            None,
-            None,
-            cancel,
-        )?;
-        let response: Value = serde_json::from_slice(&bytes)
-            .map_err(|e| error(GithubErrorKind::Json, e.to_string()))?;
-        parse_inbox_rollup_v1(targets, &response)
+        let read = |args: Vec<String>, with_reviewers: bool| {
+            let bytes = self.execute(args, None, None, cancel)?;
+            let response: Value = serde_json::from_slice(&bytes)
+                .map_err(|e| error(GithubErrorKind::Json, e.to_string()))?;
+            parse_rollup(targets, &response, with_reviewers)
+        };
+        match read(inbox_rollup_args_v1(&self.host, targets), true) {
+            // A GraphQL rejection (gh exits without an HTTP status); network and HTTP
+            // failures are not retried.
+            Err(failure)
+                if matches!(failure.kind, GithubErrorKind::Transport)
+                    && !failure.message.contains("HTTP ")
+                    && !cancel.is_cancelled() =>
+            {
+                read(inbox_rollup_status_args_v1(&self.host, targets), false)
+            }
+            result => result,
+        }
     }
 }
 

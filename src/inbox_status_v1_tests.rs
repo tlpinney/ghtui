@@ -342,7 +342,7 @@ fn rollup(
         review_decision: review.map(str::to_owned),
         check_state: checks.map(str::to_owned),
         head_oid: head.to_string().repeat(40),
-        reviewers: Vec::new(),
+        reviewers: None,
     }
 }
 
