@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review settings for ghtui.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!backlog/**"
+    - "!vendor/**"
+    - "!Cargo.lock"
+  path_instructions:
+    - path: "src/**/*.rs"
+      instructions: |
+        ghtui is a Rust/Ratatui Git and GitHub TUI for macOS and Linux. Check that:
+        - every visible action works by key and by click with the same semantics;
+        - read-only browsing never changes the working tree, index, refs or config;
+        - colours come from theme roles in src/theme.rs, not hard-coded values;
+        - GitHub access goes through `gh`, and local Git through the installed `git`.
+    - path: "tests/**/*.rs"
+      instructions: |
+        PTY journeys must use temporary repositories and strict offline fake-gh
+        fixtures. Flag sleeps, loosened Git/storage assertions, and vacuous
+        negative checks such as `!screen.contains(...)`.
+chat:
+  auto_reply: true
