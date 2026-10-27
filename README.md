@@ -237,8 +237,19 @@ or unknown, the dashboard says so instead of showing zero.
 ## Files and privacy
 
 - Configuration and the local cache live in `~/.config/ghtui/` (or
-  `$XDG_CONFIG_HOME/ghtui`): `config.toml`, `cache.sqlite3`, the search
-  `index/` and `avatars/`. Delete that directory to reset ghtui.
+  `$XDG_CONFIG_HOME/ghtui`) on Linux and in
+  `~/Library/Application Support/ghtui/` on macOS: `config.toml`,
+  `cache.sqlite3`, the search `index/` and `avatars/`. Delete that directory to
+  reset ghtui.
+- To hide repositories, list them in `config.toml` and restart ghtui:
+
+  ```toml
+  excluded_repositories = ["owner/noisy-repo", "owner/archived-repo"]
+  ```
+
+  Their PRs leave the Inbox queues and counts, and they drop out of Search,
+  Checks, the Dashboard and saved repository sets. ghtui may still read them
+  from GitHub. Opening a local checkout of one in Repository still works.
 - Private cached data is tied to the signed-in `gh` account. If you switch
   accounts or lose access, ghtui hides it again.
 - Avatars come from GitHub's public avatar URLs without credentials, and
