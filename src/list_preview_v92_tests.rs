@@ -806,3 +806,71 @@ fn design_density_v96_settings_density_is_one_focus_stop_by_key_and_click() {
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.overlay, None);
 }
+
+#[test]
+fn inbox_preview_lists_reviewers_and_commenters_from_the_inbox_read() {
+    use crate::providers::gh::{InboxReviewerV1, ReviewerRoleV1};
+    let mut app = inbox();
+    // Before the Inbox read reports on this PR, the section says so instead of "none".
+    let (_, lines) = paint(&mut app, 140, 42);
+    let preview = app.preview_area_v92.expect("preview at 140");
+    let right = columns(&lines, preview.x, preview.right());
+    assert!(holds(&right, "REVIEWERS"), "{}", right.join("\n"));
+    assert!(holds(&right, "Not loaded yet"), "{}", right.join("\n"));
+
+    let reviewer = |login: &str, kind: &str, role| InboxReviewerV1 {
+        actor: Actor {
+            actor_type: kind.into(),
+            ..actor(login)
+        },
+        role,
+    };
+    let github = app.github.as_mut().unwrap();
+    let key = crate::inbox_status_v1::row_key("github.invalid", "example/actual", 1);
+    github.inbox_reviewers_v1.insert(
+        key.clone(),
+        vec![
+            reviewer("alice", "User", ReviewerRoleV1::Approved),
+            reviewer("bob", "User", ReviewerRoleV1::Requested),
+            reviewer("coderabbitai", "Bot", ReviewerRoleV1::Commented),
+            // The PR author's own comments are not a review.
+            reviewer("thowd22", "User", ReviewerRoleV1::Commented),
+        ],
+    );
+    let (_, lines) = paint(&mut app, 140, 42);
+    let right = columns(&lines, preview.x, preview.right());
+    for needle in [
+        "AL alice · approved",
+        "BO bob · requested",
+        "CO coderabbitai [bot] · commented",
+    ] {
+        assert!(
+            holds(&right, needle),
+            "{needle} missing:\n{}",
+            right.join("\n")
+        );
+    }
+    assert!(
+        !holds(&right, "thowd22 · commented"),
+        "{}",
+        right.join("\n")
+    );
+    assert!(!holds(&right, "Not loaded yet"));
+
+    // A PR the read reported with nobody on it.
+    app.github
+        .as_mut()
+        .unwrap()
+        .inbox_reviewers_v1
+        .insert(key, Vec::new());
+    let (_, lines) = paint(&mut app, 140, 42);
+    let right = columns(&lines, preview.x, preview.right());
+    assert!(
+        holds(&right, "No reviewers or comments yet"),
+        "{}",
+        right.join("\n")
+    );
+    // Rendering the section never queues a read.
+    assert!(app.github_action.is_none());
+    assert!(!app.refresh_requested);
+}

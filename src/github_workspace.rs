@@ -1138,6 +1138,9 @@ pub struct GithubWorkspace {
     /// TASK-12 AC2: review decision and check rollup GitHub reported for the rows of the
     /// last ordinary Inbox load, keyed like the session memo. Display only.
     pub inbox_rollup_v1: std::collections::BTreeMap<PrKey, crate::inbox_status_v1::RowStatus>,
+    /// Reviewers and commenters from the same Inbox read, for the preview pane.
+    pub inbox_reviewers_v1:
+        std::collections::BTreeMap<PrKey, Vec<crate::providers::gh::InboxReviewerV1>>,
 }
 impl GithubWorkspace {
     /// SAME borrowed target predicate for painting, mouse hit regions and key
@@ -1216,6 +1219,7 @@ impl GithubWorkspace {
             legacy_startup_queue_v80: None,
             state_source_route_v80: None,
             inbox_rollup_v1: Default::default(),
+            inbox_reviewers_v1: Default::default(),
         }
     }
     pub fn scope(&self) -> Result<Scope> {
@@ -1887,6 +1891,7 @@ impl GithubWorkspace {
         use crate::providers::gh::{inbox_rollup_order_v1, INBOX_ROLLUP_BATCH_V1};
         if self.identity.account_id.is_none() {
             self.inbox_rollup_v1.clear();
+            self.inbox_reviewers_v1.clear();
             return;
         }
         if !matches!(self.freshness, Freshness::Fresh { .. }) {
@@ -1904,6 +1909,8 @@ impl GithubWorkspace {
             })
             .collect();
         self.inbox_rollup_v1
+            .retain(|key, _| current.contains_key(key));
+        self.inbox_reviewers_v1
             .retain(|key, _| current.contains_key(key));
         let mut targets: Vec<(String, u64)> = self
             .inbox
@@ -1930,12 +1937,14 @@ impl GithubWorkspace {
                     continue;
                 };
                 self.inbox_rollup_v1
-                    .insert(key, RowStatus::from_rollup_v1(&row, updated_at));
+                    .insert(key.clone(), RowStatus::from_rollup_v1(&row, updated_at));
+                self.inbox_reviewers_v1.insert(key, row.reviewers);
             }
         }
     }
     fn hide_private(mut self, error: &str) -> Self {
         self.inbox_rollup_v1.clear();
+        self.inbox_reviewers_v1.clear();
         self.legacy_startup_queue_v80 = None;
         self.state_source_route_v80 = None;
         self.identity.account_id = None;

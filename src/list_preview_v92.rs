@@ -347,8 +347,11 @@ pub fn inbox(github: &GithubWorkspace, theme: Theme, width: usize) -> Preview {
         ),
         label_value(theme, "Link", &pr.url, LABEL),
         Line::default(),
-        heading(theme, "Description"),
+        heading(theme, "Reviewers"),
     ];
+    lines.extend(reviewer_lines(github, pr, theme));
+    lines.push(Line::default());
+    lines.push(heading(theme, "Description"));
     // The description reads as GitHub renders it (TASK-114): no raw HTML or Markdown syntax.
     let body = crate::markdown_v114::lines(theme, &pr.body, width.max(1));
     if body.is_empty() {
@@ -361,7 +364,7 @@ pub fn inbox(github: &GithubWorkspace, theme: Theme, width: usize) -> Preview {
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        "Reviews, checks and files load when the PR opens",
+        "Threads, checks and files load when the PR opens",
         theme.role(Role::TextDim),
     )));
     Preview {
@@ -370,6 +373,50 @@ pub fn inbox(github: &GithubWorkspace, theme: Theme, width: usize) -> Preview {
         badge: None,
         lines,
     }
+}
+
+/// One line per reviewer or commenter from the Inbox read, with where each stands. The PR's
+/// author is left out (the Author row names them); a PR the read skipped says so.
+fn reviewer_lines(github: &GithubWorkspace, pr: &PullRequest, theme: Theme) -> Vec<Line<'static>> {
+    use crate::providers::gh::ReviewerRoleV1;
+    let key = crate::inbox_status_v1::row_key(&pr.host, &pr.repository, pr.number);
+    let Some(reviewers) = github
+        .identity
+        .account_id
+        .and(github.inbox_reviewers_v1.get(&key))
+    else {
+        return vec![Line::from(Span::styled(
+            "Not loaded yet • press r to refresh",
+            theme.role(Role::TextMuted),
+        ))];
+    };
+    let lines: Vec<Line<'static>> = reviewers
+        .iter()
+        .filter(|reviewer| {
+            reviewer.role != ReviewerRoleV1::Commented
+                || !reviewer.actor.login.eq_ignore_ascii_case(&pr.author.login)
+        })
+        .map(|reviewer| {
+            let identity = ActorIdentity::github(&github.identity.host, &reviewer.actor);
+            let token = match reviewer.role {
+                ReviewerRoleV1::Approved => SemanticToken::Success,
+                ReviewerRoleV1::ChangesRequested => SemanticToken::Failure,
+                ReviewerRoleV1::Requested => SemanticToken::Pending,
+                _ => SemanticToken::Muted,
+            };
+            let mut spans = actor_spans(theme, &identity);
+            spans.push(Span::styled(" · ", theme.role(Role::TextMuted)));
+            spans.push(Span::styled(reviewer.role.label(), theme.style(token)));
+            Line::from(spans)
+        })
+        .collect();
+    if lines.is_empty() {
+        return vec![Line::from(Span::styled(
+            "No reviewers or comments yet",
+            theme.role(Role::TextMuted),
+        ))];
+    }
+    lines
 }
 
 /// The selected run from the loaded Runs list, with its jobs when this run's attempt is

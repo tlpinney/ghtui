@@ -14,7 +14,7 @@ fn provider(fixture: &Fixture) -> GithubProvider {
 fn inbox_rollup_v1_query_is_exact_and_ordered() {
     assert_eq!(
         inbox_rollup_query_v1(&[("org/alpha", 7), ("org/beta", 9)]),
-        "query{p0:repository(owner:\"org\",name:\"alpha\"){pullRequest(number:7){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}}} p1:repository(owner:\"org\",name:\"beta\"){pullRequest(number:9){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}}}}"
+        "query{p0:repository(owner:\"org\",name:\"alpha\"){pullRequest(number:7){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewRequests(first:10){nodes{requestedReviewer{__typename ...on User{login} ...on Bot{login} ...on Mannequin{login} ...on Team{combinedSlug}}}} latestReviews(first:10){nodes{state author{__typename login}}} comments(last:20){nodes{author{__typename login}}}}} p1:repository(owner:\"org\",name:\"beta\"){pullRequest(number:9){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewRequests(first:10){nodes{requestedReviewer{__typename ...on User{login} ...on Bot{login} ...on Mannequin{login} ...on Team{combinedSlug}}}} latestReviews(first:10){nodes{state author{__typename login}}} comments(last:20){nodes{author{__typename login}}}}}}"
     );
     let args = inbox_rollup_args_v1("github.invalid", &[("org/alpha", 7)]);
     assert_eq!(
@@ -60,6 +60,55 @@ fn inbox_rollup_v1_parses_states_and_skips_missing_prs() {
     assert_eq!(rows[1].review_decision, None);
     assert_eq!(rows[1].check_state, None);
     assert!(parse_inbox_rollup_v1(&targets, &json!({"errors":[{"message":"no"}]})).is_err());
+}
+
+#[test]
+fn inbox_rollup_v1_lists_reviewers_requests_and_commenters_once_each() {
+    let targets = [("org/alpha", 7), ("org/beta", 8)];
+    let response = json!({"data":{
+        "p0":{"pullRequest":{"reviewDecision":"CHANGES_REQUESTED",
+            "commits":{"nodes":[{"commit":{"oid":"abc","statusCheckRollup":null}}]},
+            "latestReviews":{"nodes":[
+                {"state":"APPROVED","author":{"__typename":"User","login":"alice"}},
+                {"state":"COMMENTED","author":{"__typename":"Bot","login":"coderabbitai"}},
+                {"state":"CHANGES_REQUESTED","author":{"__typename":"User","login":"carol"}},
+                {"state":"PENDING","author":{"__typename":"User","login":"viewer"}},
+                {"state":"APPROVED","author":null}
+            ]},
+            "reviewRequests":{"nodes":[
+                {"requestedReviewer":{"__typename":"User","login":"bob"}},
+                {"requestedReviewer":{"__typename":"User","login":"Alice"}},
+                {"requestedReviewer":{"__typename":"Team","combinedSlug":"org/core"}},
+                {"requestedReviewer":null}
+            ]},
+            "comments":{"nodes":[
+                {"author":{"__typename":"Bot","login":"coderabbitai"}},
+                {"author":{"__typename":"User","login":"dave"}},
+                {"author":{"__typename":"User","login":"dave"}},
+                {"author":null}
+            ]}}},
+        "p1":{"pullRequest":{"reviewDecision":null,
+            "commits":{"nodes":[{"commit":{"oid":"def","statusCheckRollup":null}}]}}}
+    }});
+    let rows = parse_inbox_rollup_v1(&targets, &response).unwrap();
+    let seen: Vec<(&str, &str, ReviewerRoleV1)> = rows[0]
+        .reviewers
+        .iter()
+        .map(|r| (r.actor.login.as_str(), r.actor.actor_type.as_str(), r.role))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("carol", "User", ReviewerRoleV1::ChangesRequested),
+            ("alice", "User", ReviewerRoleV1::Approved),
+            ("coderabbitai", "Bot", ReviewerRoleV1::Reviewed),
+            ("bob", "User", ReviewerRoleV1::Requested),
+            ("org/core", "Team", ReviewerRoleV1::Requested),
+            ("dave", "User", ReviewerRoleV1::Commented),
+        ]
+    );
+    // A PR read without the reviewer fields (older fixtures) simply has none.
+    assert!(rows[1].reviewers.is_empty());
 }
 
 #[test]

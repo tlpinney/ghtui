@@ -11,7 +11,8 @@ pub(crate) use inbox_exact_v1::ExactInboxRepositoryMetadataV1;
 use inbox_exact_v1::{ExactInboxState, InboxReadPolicy};
 pub use inbox_rollup_v1::{
     inbox_rollup_args_v1, inbox_rollup_order_v1, inbox_rollup_query_v1, parse_inbox_rollup_v1,
-    InboxRollupV1, INBOX_ROLLUP_BATCH_V1,
+    InboxReviewerV1, InboxRollupV1, ReviewerRoleV1, INBOX_COMMENTERS_LAST_V1,
+    INBOX_REVIEWERS_FIRST_V1, INBOX_ROLLUP_BATCH_V1,
 };
 mod pr;
 pub(crate) use pr::FreshInlineCommentObservationV14;
