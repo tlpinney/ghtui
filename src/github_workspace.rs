@@ -48,8 +48,12 @@ pub enum InboxFilter {
     Authored,
     Assigned,
     ReviewRequested,
+    /// Recently merged PRs involving the user: a tab of its own, read on demand and kept out
+    /// of `ALL` and the open queues' counts.
+    Merged,
 }
 impl InboxFilter {
+    pub const MERGED: (Self, &'static str, char) = (Self::Merged, "Merged", 'M');
     pub const ALL: [(Self, &'static str, char); 4] = [
         (Self::All, "All", 'a'),
         (Self::Authored, "Created by me", 'c'),
@@ -62,6 +66,7 @@ impl InboxFilter {
             Self::Authored => pr.queues.contains(&Queue::Authored),
             Self::Assigned => pr.queues.contains(&Queue::Assigned),
             Self::ReviewRequested => pr.queues.contains(&Queue::ReviewRequested),
+            Self::Merged => false,
         }
     }
 }
@@ -79,6 +84,12 @@ pub fn queue_summary_v1(current: &str, counts: [usize; 4]) -> String {
 /// Empty-queue text that points at a populated queue instead of a dead end.
 pub fn empty_queue_hint_v1(filter: InboxFilter, counts: [usize; 4]) -> String {
     let base = "No pull requests in this queue / scope.";
+    if filter == InboxFilter::Merged {
+        return format!(
+            "No merged pull requests involving you in the last {} days. Press r to refresh.",
+            crate::providers::gh::RECENTLY_MERGED_DAYS_V1
+        );
+    }
     if filter == InboxFilter::All {
         return format!("{base} Press r to refresh.");
     }
@@ -1141,6 +1152,12 @@ pub struct GithubWorkspace {
     /// Reviewers and commenters from the same Inbox read, for the preview pane.
     pub inbox_reviewers_v1:
         std::collections::BTreeMap<PrKey, Vec<crate::providers::gh::InboxReviewerV1>>,
+    /// The Merged tab's PRs, newest merge first; `None` until the tab's first read.
+    pub merged_v1: Option<Vec<PullRequest>>,
+    /// When each Merged-tab PR merged (UTC), by PR.
+    pub merged_at_v1: std::collections::BTreeMap<PrKey, String>,
+    /// Why the Merged tab's last read failed, shown in place of its list.
+    pub merged_error_v1: Option<String>,
 }
 impl GithubWorkspace {
     /// SAME borrowed target predicate for painting, mouse hit regions and key
@@ -1220,6 +1237,9 @@ impl GithubWorkspace {
             state_source_route_v80: None,
             inbox_rollup_v1: Default::default(),
             inbox_reviewers_v1: Default::default(),
+            merged_v1: None,
+            merged_at_v1: Default::default(),
+            merged_error_v1: None,
         }
     }
     pub fn scope(&self) -> Result<Scope> {
@@ -1235,6 +1255,14 @@ impl GithubWorkspace {
         )
     }
     pub fn visible(&self) -> Vec<&PullRequest> {
+        if self.filter == InboxFilter::Merged {
+            return self
+                .merged_v1
+                .iter()
+                .flatten()
+                .filter(|pr| !self.exclusions.contains(&pr.repository))
+                .collect();
+        }
         self.inbox
             .pull_requests
             .iter()
@@ -1956,9 +1984,95 @@ impl GithubWorkspace {
             }
         }
     }
+    /// The Merged tab's read: one search for PRs merged recently that involve the user, then
+    /// the same status/reviewer read the open queues use, for those PRs only. Sent only for
+    /// the Merged tab. A failure keeps the previous list and records why.
+    pub fn load_recently_merged_v1(
+        mut self,
+        provider: &GithubProvider,
+        cancel: &CancellationToken,
+    ) -> Result<Self> {
+        use crate::inbox_status_v1::{row_key, RowStatus};
+        use crate::providers::gh::{inbox_rollup_order_v1, INBOX_ROLLUP_BATCH_V1};
+        if self.identity.account_id.is_none() {
+            self.merged_v1 = None;
+            self.merged_at_v1.clear();
+            self.merged_error_v1 =
+                Some("Load the authenticated Inbox before reading merged pull requests.".into());
+            return Ok(self);
+        }
+        let since = crate::providers::gh::recently_merged_since_v1(crate::storage::now());
+        let merged =
+            match provider.recently_merged_v1(&self.identity, &self.repositories, &since, cancel) {
+                Ok(merged) => merged,
+                Err(error) => {
+                    self.merged_error_v1 =
+                        Some(format!("Merged pull requests unavailable: {error}"));
+                    return Ok(self);
+                }
+            };
+        self.merged_error_v1 = None;
+        self.merged_at_v1 = merged
+            .iter()
+            .map(|row| (PrKey::from(&row.pr), row.merged_at.clone()))
+            .collect();
+        let mut targets: Vec<(String, u64)> = merged
+            .iter()
+            .map(|row| (row.pr.repository.clone(), row.pr.number))
+            .collect();
+        let updated: std::collections::BTreeMap<PrKey, String> = merged
+            .iter()
+            .map(|row| {
+                (
+                    row_key(&row.pr.host, &row.pr.repository, row.pr.number),
+                    row.pr.updated_at.clone(),
+                )
+            })
+            .collect();
+        self.merged_v1 = Some(merged.into_iter().map(|row| row.pr).collect());
+        inbox_rollup_order_v1(&mut targets);
+        for chunk in targets.chunks(INBOX_ROLLUP_BATCH_V1) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let batch: Vec<(&str, u64)> = chunk.iter().map(|(r, n)| (r.as_str(), *n)).collect();
+            let Ok(rows) = provider.inbox_rollup_v1(&batch, cancel) else {
+                continue;
+            };
+            for row in rows {
+                let key = row_key(&self.identity.host, &row.repository, row.number);
+                let Some(updated_at) = updated.get(&key) else {
+                    continue;
+                };
+                self.inbox_rollup_v1
+                    .insert(key.clone(), RowStatus::from_rollup_v1(&row, updated_at));
+                match row.reviewers {
+                    Some(reviewers) => self.inbox_reviewers_v1.insert(key, reviewers),
+                    None => self.inbox_reviewers_v1.remove(&key),
+                };
+            }
+        }
+        Ok(self)
+    }
+
+    /// The Merged tab's summary line in place of the open queues' counts.
+    pub fn merged_summary_v1(&self) -> String {
+        let days = crate::providers::gh::RECENTLY_MERGED_DAYS_V1;
+        match &self.merged_v1 {
+            None => format!("Queue: Merged • last {days} days • loading…"),
+            Some(_) => format!(
+                "Queue: Merged • last {days} days • {} involving you",
+                self.visible().len()
+            ),
+        }
+    }
+
     fn hide_private(mut self, error: &str) -> Self {
         self.inbox_rollup_v1.clear();
         self.inbox_reviewers_v1.clear();
+        self.merged_v1 = None;
+        self.merged_at_v1.clear();
+        self.merged_error_v1 = None;
         self.legacy_startup_queue_v80 = None;
         self.state_source_route_v80 = None;
         self.identity.account_id = None;

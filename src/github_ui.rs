@@ -37,6 +37,7 @@ fn inbox_filter_compact(filter: InboxFilter) -> &'static str {
         InboxFilter::Authored => "Created",
         InboxFilter::Assigned => "Assigned",
         InboxFilter::ReviewRequested => "Review",
+        InboxFilter::Merged => "Merged",
     }
 }
 
@@ -91,12 +92,14 @@ pub fn footer_keys(app: &App) -> Vec<KeyControl> {
             .with_priority(20),
             clear(40),
         ]);
-        keys.extend(InboxFilter::ALL.iter().map(|(filter, label, key)| {
-            KeyControl::new(key.to_string(), *label, gh(GithubAction::Filter(*filter)))
-                .with_compact(inbox_filter_compact(*filter))
-                .in_group(ControlGroup::Mode)
-                .with_selected(github.filter == *filter)
-        }));
+        keys.extend(InboxFilter::ALL.iter().chain([&InboxFilter::MERGED]).map(
+            |(filter, label, key)| {
+                KeyControl::new(key.to_string(), *label, gh(GithubAction::Filter(*filter)))
+                    .with_compact(inbox_filter_compact(*filter))
+                    .in_group(ControlGroup::Mode)
+                    .with_selected(github.filter == *filter)
+            },
+        ));
         return keys;
     };
     let tab = page.tab;
@@ -553,7 +556,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .find(|(filter, _, _)| *filter == github.filter)
         .map_or("All", |(_, label, _)| *label);
-    let queue_line = if github.state_membership_unavailable_v68() {
+    let queue_line = if github.filter == InboxFilter::Merged {
+        github.merged_summary_v1()
+    } else if github.state_membership_unavailable_v68() {
         format!("Queue: {filter_label}")
     } else {
         crate::github_workspace::queue_summary_v1(filter_label, github.queue_counts())
@@ -592,21 +597,38 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         y += 1;
     }
+    // The open queues' coverage says nothing about the Merged tab, which shows its own read.
+    let merged_tab = github.filter == InboxFilter::Merged;
+    let coverage = if merged_tab {
+        github.merged_error_v1.clone().unwrap_or_else(|| {
+            format!(
+                "Merged since {} UTC • newest merge first • at most {}",
+                crate::providers::gh::recently_merged_since_v1(crate::storage::now()),
+                crate::providers::gh::RECENTLY_MERGED_LIMIT_V1
+            )
+        })
+    } else {
+        github.coverage_label()
+    };
     frame.render_widget(
-        Paragraph::new(crate::ui_chrome::fit(
-            &github.coverage_label(),
-            usize::from(area.width),
-        ))
-        .style(theme.style(if github.inbox.coverage.complete {
-            SemanticToken::Normal
-        } else {
-            SemanticToken::Pending
-        })),
+        Paragraph::new(crate::ui_chrome::fit(&coverage, usize::from(area.width))).style(
+            theme.style(if merged_tab {
+                if github.merged_error_v1.is_some() {
+                    SemanticToken::Failure
+                } else {
+                    SemanticToken::Normal
+                }
+            } else if github.inbox.coverage.complete {
+                SemanticToken::Normal
+            } else {
+                SemanticToken::Pending
+            }),
+        ),
         Rect::new(area.x, y, area.width, 1),
     );
     y += 1;
     let warning = github.inbox.coverage.reasons.join(" • ");
-    if !warning.is_empty() {
+    if !warning.is_empty() && !merged_tab {
         frame.render_widget(
             Paragraph::new(crate::ui_chrome::fit(
                 &safe_text(&warning),
@@ -623,7 +645,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let host = github.identity.host.clone();
     let statuses = visible
         .iter()
-        .map(|pr| app.inbox_status_v1.label(github, pr))
+        .map(|pr| {
+            if merged_tab {
+                merged_label(github, pr)
+            } else {
+                app.inbox_status_v1.label(github, pr)
+            }
+        })
         .collect::<Vec<_>>();
     let rows = visible
         .iter()
@@ -656,7 +684,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         painter.empty(
             frame.buffer_mut(),
             y,
-            &if github.state_membership_unavailable_v68() {
+            &if merged_tab && github.merged_v1.is_none() && github.merged_error_v1.is_none() {
+                "Loading merged pull requests…".to_string()
+            } else if github.state_membership_unavailable_v68() && !merged_tab {
                 "Queue membership unavailable • use a genuine fresh scope read.".to_string()
             } else {
                 crate::github_workspace::empty_queue_hint_v1(github.filter, github.queue_counts())
@@ -699,6 +729,27 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             rect,
             action: Action::Github(GithubAction::Open(visible[index].into())),
         });
+    }
+}
+
+/// A Merged-tab row's STATUS: when it merged, with the review decision the read reported.
+fn merged_label(
+    github: &crate::github_workspace::GithubWorkspace,
+    pr: &crate::providers::gh::PullRequest,
+) -> crate::inbox_status_v1::RowLabel {
+    let merged_at = github
+        .merged_at_v1
+        .get(&crate::github_workspace::PrKey::from(pr))
+        .map(String::as_str)
+        .unwrap_or_default();
+    let text = match crate::ui_table::age_at(merged_at, crate::storage::now()) {
+        Some(age) => format!("Merged {age} ago"),
+        None => "Merged".to_string(),
+    };
+    crate::inbox_status_v1::RowLabel {
+        text,
+        role: crate::theme::Role::Success,
+        known: true,
     }
 }
 

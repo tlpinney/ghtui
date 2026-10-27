@@ -2168,7 +2168,15 @@ impl App {
                             ||matches!(&action,GithubAction::PrTab(crate::github_workspace::PrTab::Metadata))
                                 &&github.pr.as_ref().is_some_and(|p|matches!(p.tab,crate::github_workspace::PrTab::Summary|crate::github_workspace::PrTab::Conversation));
                     match &action {
-                        GithubAction::Filter(filter) => github.set_filter(*filter),
+                        GithubAction::Filter(filter) => {
+                            github.set_filter(*filter);
+                            // The Merged tab reads on demand, the first time it is chosen.
+                            if *filter == crate::github_workspace::InboxFilter::Merged
+                                && github.merged_v1.is_none()
+                            {
+                                self.github_action = Some(action.clone());
+                            }
+                        }
                         GithubAction::Back => {
                             // State changed queue membership/counts. Closing
                             // this actual direct PR retires ONLY its stale

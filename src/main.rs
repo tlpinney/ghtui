@@ -2331,11 +2331,18 @@ fn run() -> Result<()> {
                         _ if previous.pr.is_some() => {
                             previous.reconcile_page(&provider, &database, &cancel)
                         }
-                        _ => previous.refresh(&provider, &database, &cancel).map(
+                        Some(GithubAction::Filter(
+                            ghtui::github_workspace::InboxFilter::Merged,
+                        )) => previous.load_recently_merged_v1(&provider, &cancel),
+                        _ => previous.refresh(&provider, &database, &cancel).and_then(
                             |mut refreshed| {
                                 // TASK-12 AC2: review decision and check rollup for every row.
                                 refreshed.load_inbox_rollup_v1(&provider, &cancel);
-                                refreshed
+                                // Refreshing on the Merged tab re-reads it too.
+                                if refreshed.filter == ghtui::github_workspace::InboxFilter::Merged {
+                                    return refreshed.load_recently_merged_v1(&provider, &cancel);
+                                }
+                                Ok(refreshed)
                             },
                         ),
                     }

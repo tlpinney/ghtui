@@ -7,6 +7,7 @@ use std::ffi::OsString;
 use std::time::Duration;
 mod inbox_exact_v1;
 mod inbox_rollup_v1;
+mod recently_merged_v1;
 pub(crate) use inbox_exact_v1::ExactInboxRepositoryMetadataV1;
 use inbox_exact_v1::{ExactInboxState, InboxReadPolicy};
 pub use inbox_rollup_v1::{
@@ -14,6 +15,10 @@ pub use inbox_rollup_v1::{
     inbox_rollup_status_args_v1, inbox_rollup_status_query_v1, parse_inbox_rollup_v1,
     InboxReviewerV1, InboxRollupV1, ReviewerRoleV1, INBOX_COMMENTERS_LAST_V1,
     INBOX_REVIEWERS_FIRST_V1, INBOX_ROLLUP_BATCH_V1,
+};
+pub use recently_merged_v1::{
+    recently_merged_args_v1, recently_merged_query_v1, recently_merged_since_v1, MergedPrV1,
+    RECENTLY_MERGED_DAYS_V1, RECENTLY_MERGED_LIMIT_V1,
 };
 mod pr;
 pub(crate) use pr::FreshInlineCommentObservationV14;

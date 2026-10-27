@@ -874,3 +874,87 @@ fn inbox_preview_lists_reviewers_and_commenters_from_the_inbox_read() {
     assert!(app.github_action.is_none());
     assert!(!app.refresh_requested);
 }
+
+/// The cell (column, row) where `needle` starts on screen.
+fn find_cell(lines: &[String], needle: &str) -> Option<(u16, u16)> {
+    lines.iter().enumerate().find_map(|(y, line)| {
+        line.find(needle)
+            .map(|byte| (line[..byte].chars().count() as u16, y as u16))
+    })
+}
+
+#[test]
+fn inbox_merged_tab_reads_on_demand_by_key_and_click_and_lists_merges() {
+    use crate::github_workspace::InboxFilter;
+    for mouse in [false, true] {
+        let mut app = inbox();
+        let (_, lines) = paint(&mut app, 160, 42);
+        assert!(holds(&lines, "M Merged"), "{}", lines.join("\n"));
+        if mouse {
+            let (x, y) = find_cell(&lines, "M Merged").unwrap();
+            click(&mut app, x, y);
+        } else {
+            app.handle_event(Event::Key(KeyEvent::new(
+                KeyCode::Char('M'),
+                KeyModifiers::SHIFT,
+            )));
+        }
+        let github = app.github.as_ref().unwrap();
+        assert_eq!(github.filter, InboxFilter::Merged, "mouse={mouse}");
+        // The first choice queues the tab's one read; the open queues are not re-read.
+        assert_eq!(
+            app.github_action,
+            Some(GithubAction::Filter(InboxFilter::Merged)),
+            "mouse={mouse}"
+        );
+        assert!(!app.refresh_requested);
+        let (_, lines) = paint(&mut app, 160, 42);
+        assert!(
+            holds(&lines, "Loading merged pull requests…"),
+            "{}",
+            lines.join("\n")
+        );
+        assert!(holds(&lines, "Queue: Merged • last 7 days • loading…"));
+
+        // The read lands: one merged PR, with its merge time in STATUS.
+        app.github_action = None;
+        let github = app.github.as_mut().unwrap();
+        let mut merged = pull_request(9, "Ship the merged tab", "sam-ops");
+        merged.state = "merged".into();
+        merged.queues.clear();
+        let merged_at = crate::metrics_workspace::utc_label(crate::storage::now() - 7200);
+        github.merged_at_v1.insert(
+            PrKey::from(&merged),
+            format!("{}T{}Z", &merged_at[..10], &merged_at[11..19]),
+        );
+        github.merged_v1 = Some(vec![merged]);
+        github.set_filter(InboxFilter::Merged);
+        let (_, lines) = paint(&mut app, 160, 42);
+        for needle in [
+            "Queue: Merged • last 7 days • 1 involving you",
+            "Ship the merged tab",
+            "Merged 2h ago",
+        ] {
+            assert!(holds(&lines, needle), "{needle}:\n{}", lines.join("\n"));
+        }
+        // The open queues keep their own counts and rows.
+        assert!(!holds(&lines, "Fix dark playback"));
+
+        // Choosing the tab again uses the loaded list; a/click All goes back.
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('M'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.github_action, None);
+        if mouse {
+            let (x, y) = find_cell(&lines, "a All").unwrap();
+            click(&mut app, x, y);
+        } else {
+            key(&mut app, KeyCode::Char('a'));
+        }
+        assert_eq!(app.github.as_ref().unwrap().filter, InboxFilter::All);
+        let (_, lines) = paint(&mut app, 160, 42);
+        assert!(holds(&lines, "Fix dark playback"), "{}", lines.join("\n"));
+        assert!(!holds(&lines, "Ship the merged tab"));
+    }
+}
