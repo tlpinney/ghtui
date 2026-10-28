@@ -3397,7 +3397,7 @@ impl App {
                     });
                     if pending_observed {
                         match key.code {
-                            KeyCode::Char('b') | KeyCode::Esc => {
+                            KeyCode::Char('b') | KeyCode::Esc | KeyCode::Left => {
                                 self.dispatch(Action::Github(GithubAction::Back));
                                 return;
                             }
@@ -3415,6 +3415,18 @@ impl App {
                         .github
                         .as_ref()
                         .is_some_and(|github| github.pr.is_some());
+                    // `←` goes back like `b` while a PR is open: the same `b Back` control, so
+                    // both carry one action. Overlays that scroll sideways took `←` already.
+                    if pr_open && key.code == KeyCode::Left && key.modifiers.is_empty() {
+                        let back =
+                            crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
+                        if let Some(action) =
+                            crate::footer::resolve_key(&crate::github_ui::footer_keys(self), back)
+                        {
+                            self.dispatch(action);
+                            return;
+                        }
+                    }
                     // Footer keys and tabs: the same actions their tokens carry. Enter keeps
                     // its focus-dependent meaning below.
                     if key.code != KeyCode::Enter {

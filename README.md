@@ -170,7 +170,7 @@ ghtui --help | --version
 | `Tab` / `Shift-Tab` | Move focus between the content and its controls |
 | `Enter` or click | Open or activate the selection |
 | `↑ ↓` / `j k`, wheel | Move and scroll; `PgUp`/`PgDn`, `Home`/`End` |
-| `b` | Back |
+| `b` | Back (`←` also goes back from a pull request) |
 | `Esc` | Close an overlay |
 | `q` | Quit (`Ctrl-C` always exits) |
 

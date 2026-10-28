@@ -481,3 +481,30 @@ fn web_w_sends_exactly_gh_pr_view_web_for_the_host_repository_and_number() {
         ]
     );
 }
+
+#[test]
+fn left_arrow_goes_back_from_a_pr_like_b_and_does_nothing_in_the_list() {
+    for tab in [
+        PrTab::Summary,
+        PrTab::Conversation,
+        PrTab::Files,
+        PrTab::Checks,
+    ] {
+        let mut app = detail(tab);
+        paint(&mut app, 120, 40);
+        app.handle_event(crossterm::event::Event::Key(press(KeyCode::Left)));
+        assert!(
+            app.github.as_ref().unwrap().pr.is_none(),
+            "← returns to the Inbox from {tab:?}"
+        );
+        assert_eq!(app.github_action, None, "Back reads nothing");
+    }
+    // In the list there is nothing to go back to: the selection and view stay.
+    let mut app = inbox(3);
+    app.handle_event(crossterm::event::Event::Key(press(KeyCode::Down)));
+    let selected = app.github.as_ref().unwrap().selected.clone();
+    app.handle_event(crossterm::event::Event::Key(press(KeyCode::Left)));
+    assert_eq!(app.github.as_ref().unwrap().selected, selected);
+    assert_eq!(app.view, View::Inbox);
+    assert_eq!(app.github_action, None);
+}
