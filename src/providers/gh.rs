@@ -532,6 +532,18 @@ impl From<CommandFailure> for GithubError {
 }
 pub type GithubResult<T> = Result<T, GithubError>;
 
+/// The exact `gh` argv that opens a pull request in the web browser.
+pub fn open_pr_in_browser_args_v1(host: &str, repo: &str, n: u64) -> Vec<String> {
+    vec![
+        "pr".into(),
+        "view".into(),
+        n.to_string(),
+        "--repo".into(),
+        format!("{host}/{repo}"),
+        "--web".into(),
+    ]
+}
+
 #[derive(Clone)]
 pub struct GithubProvider {
     host: String,
@@ -1209,6 +1221,29 @@ impl GithubProvider {
             updated_at: text(v, "updated_at"),
             queues: BTreeSet::new(),
         })
+    }
+    /// Opens the pull request's page in the user's web browser (`gh pr view --web`). It
+    /// changes nothing on GitHub.
+    pub fn open_pr_in_browser_v1(
+        &self,
+        repo: &str,
+        n: u64,
+        cancel: &CancellationToken,
+    ) -> GithubResult<()> {
+        validate_repo(repo)?;
+        if n == 0 {
+            return Err(error(
+                GithubErrorKind::InvalidTarget,
+                "Resource number must be positive",
+            ));
+        }
+        self.execute(
+            open_pr_in_browser_args_v1(&self.host, repo, n),
+            None,
+            None,
+            cancel,
+        )
+        .map(|_| ())
     }
     pub fn pr_summary(
         &self,

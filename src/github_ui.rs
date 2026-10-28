@@ -61,6 +61,18 @@ pub fn footer_keys(app: &App) -> Vec<KeyControl> {
             .with_compact("Clear")
             .with_priority(priority)
     };
+    // `w Web`: the pull request's GitHub page in the web browser; nothing on GitHub changes.
+    let web = |key: Option<crate::github_workspace::PrKey>| {
+        KeyControl::new(
+            "w",
+            "Web",
+            key.map_or_else(
+                || Action::Explain("Select a pull request first.".into()),
+                |key| gh(GithubAction::Browse(key)),
+            ),
+        )
+        .with_priority(60)
+    };
     let Some(page) = github.pr.as_ref() else {
         if scoped {
             // A pending observed section: Back cancels it; nothing else is offered yet.
@@ -91,6 +103,12 @@ pub fn footer_keys(app: &App) -> Vec<KeyControl> {
             )
             .with_priority(20),
             clear(40),
+            web(github.selected.clone()).disabled_by(
+                github
+                    .visible()
+                    .is_empty()
+                    .then(|| "No pull request in this queue.".to_string()),
+            ),
         ]);
         keys.extend(InboxFilter::ALL.iter().chain([&InboxFilter::MERGED]).map(
             |(filter, label, key)| {
@@ -228,6 +246,10 @@ pub fn footer_keys(app: &App) -> Vec<KeyControl> {
     } else {
         45
     };
+    // The open PR's page on GitHub, in the web browser.
+    keys.push(web(Some(crate::github_workspace::PrKey::from(
+        &page.details.summary.pr,
+    ))));
     keys.extend([refresh(refresh_priority), clear(70)]);
     if crate::pr_actor_profile_v1::offered(tab) {
         // The selected comment's author, or the PR author (TASK-34). Last of the view's keys

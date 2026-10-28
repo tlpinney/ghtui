@@ -146,6 +146,8 @@ pub enum GithubAction {
     ClearCache,
     Actions,
     Compose(crate::forms::PrFormKind),
+    /// Open the pull request's page in the web browser; nothing on GitHub changes.
+    Browse(PrKey),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

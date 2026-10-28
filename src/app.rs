@@ -2148,6 +2148,12 @@ impl App {
                     crate::pr_actor_profile_v1::open(self);
                     return;
                 }
+                if let GithubAction::Browse(key) = &action {
+                    // Opening the browser leaves the list, page and focus where they are.
+                    self.status = format!("Opening {} in the browser…", key.label());
+                    self.github_action = Some(action);
+                    return;
+                }
                 if action == GithubAction::Actions {
                     self.overlay = Some(Overlay::PrActions);
                     self.pr_action_index = 0;

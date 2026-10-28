@@ -2334,6 +2334,26 @@ fn run() -> Result<()> {
                         Some(GithubAction::Filter(
                             ghtui::github_workspace::InboxFilter::Merged,
                         )) => previous.load_recently_merged_v1(&provider, &cancel),
+                        Some(GithubAction::Browse(key)) => {
+                            provider
+                                .open_pr_in_browser_v1(&key.repository, key.number, &cancel)
+                                .map_err(|error| {
+                                    format!("Could not open {} in the browser: {error}", key.label())
+                                })?;
+                            return Ok(PreparedView {
+                                lines: vec![],
+                                context: Some(previous.context()),
+                                status: format!(
+                                    "Opened {} in the browser • nothing changed on GitHub",
+                                    key.label()
+                                ),
+                                workspace: None,
+                                github: Some(previous),
+                                form: None,
+                                activate_if_untouched: false,
+                                ..PreparedView::default()
+                            });
+                        }
                         _ => previous.refresh(&provider, &database, &cancel).and_then(
                             |mut refreshed| {
                                 // TASK-12 AC2: review decision and check rollup for every row.

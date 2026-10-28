@@ -361,3 +361,123 @@ fn design_footer_v90_loading_pr_keeps_refresh_beside_cancel_at_80_columns() {
     app.loading[View::Inbox.index()] = false;
     assert!(!tokens(&app, 80).iter().any(|t| t == "Esc Cancel"));
 }
+
+/// The cell (column, row) where `needle` starts on screen.
+fn cell_of(rows: &[String], needle: &str) -> Option<(u16, u16)> {
+    rows.iter().enumerate().find_map(|(y, row)| {
+        row.find(needle)
+            .map(|byte| (row[..byte].chars().count() as u16, y as u16))
+    })
+}
+
+#[test]
+fn web_w_opens_the_selected_or_open_pr_in_the_browser_by_key_and_click() {
+    use crate::github_workspace::PrKey;
+    use crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
+    let expected = |number| {
+        GithubAction::Browse(PrKey {
+            host: "github.invalid".into(),
+            repository: "example/actual".into(),
+            number,
+        })
+    };
+    for mouse in [false, true] {
+        // Inbox: the selected row (the second one).
+        let mut app = inbox(3);
+        app.handle_event(Event::Key(press(KeyCode::Down)));
+        let selected = app.github.as_ref().unwrap().selected.clone().unwrap();
+        let rows = paint(&mut app, 160, 42);
+        assert!(
+            rows.last().unwrap().contains("w Web"),
+            "{}",
+            rows.join("\n")
+        );
+        if mouse {
+            let (x, y) = cell_of(&rows, "w Web").unwrap();
+            app.handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            }));
+        } else {
+            app.handle_event(Event::Key(press(KeyCode::Char('w'))));
+        }
+        assert_eq!(
+            app.github_action,
+            Some(expected(selected.number)),
+            "mouse={mouse}"
+        );
+        // Opening the browser keeps the place in the list and reads nothing else.
+        assert_eq!(app.github.as_ref().unwrap().selected, Some(selected));
+        assert!(app.github.as_ref().unwrap().pr.is_none());
+        assert!(!app.refresh_requested);
+        assert!(
+            app.status.starts_with("Opening example/actual#"),
+            "{}",
+            app.status
+        );
+
+        // An open PR: `w` carries that PR; `o` stays the Summary tab.
+        let mut app = detail(PrTab::Conversation);
+        let open = PrKey::from(
+            &app.github
+                .as_ref()
+                .unwrap()
+                .pr
+                .as_ref()
+                .unwrap()
+                .details
+                .summary
+                .pr,
+        );
+        let keys = footer_keys(&app);
+        assert_eq!(
+            resolve_key(&keys, press(KeyCode::Char('w'))),
+            Some(Action::Github(GithubAction::Browse(open.clone())))
+        );
+        assert_eq!(
+            resolve_key(&keys, press(KeyCode::Char('o'))),
+            Some(Action::Github(GithubAction::PrTab(PrTab::Summary)))
+        );
+        let rows = paint(&mut app, 160, 42);
+        if mouse {
+            let (x, y) = cell_of(&rows, "w Web").expect("w Web on the PR bar at 160");
+            app.handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            }));
+        } else {
+            app.handle_event(Event::Key(press(KeyCode::Char('w'))));
+        }
+        assert_eq!(app.github_action, Some(GithubAction::Browse(open)));
+        assert!(
+            app.github.as_ref().unwrap().pr.is_some(),
+            "the PR stays open"
+        );
+    }
+    // An empty queue keeps the key but explains why it does nothing.
+    let app = inbox(0);
+    let web = footer_keys(&app)
+        .into_iter()
+        .find(|control| control.key == "w")
+        .unwrap();
+    assert!(web.disabled.is_some());
+}
+
+#[test]
+fn web_w_sends_exactly_gh_pr_view_web_for_the_host_repository_and_number() {
+    assert_eq!(
+        crate::providers::gh::open_pr_in_browser_args_v1("github.invalid", "example/actual", 7),
+        [
+            "pr",
+            "view",
+            "7",
+            "--repo",
+            "github.invalid/example/actual",
+            "--web"
+        ]
+    );
+}
