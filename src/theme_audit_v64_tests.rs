@@ -29,7 +29,7 @@ const COLOR_ALLOWLIST: [(&str, usize, &str); 2] = [
 /// Files that format a login as `@{…}` in text, with the exact count and why that is not an
 /// actor row. Actor rows draw through `ActorIdentity` (label, chip, avatar fallback); these are
 /// the signed-in operator, an exact account echo beside an identity row, or a team mention.
-const ACTOR_ALLOWLIST: [(&str, usize, &str); 28] = [
+const ACTOR_ALLOWLIST: [(&str, usize, &str); 27] = [
     ("identity.rs", 2, "the shared ActorIdentity::label itself"),
     ("providers/gh.rs", 1, "provider Actor::label: the plain username ActorIdentity wraps"),
     ("pr_conversation_cards_v115.rs", 1, "quote reply body text sent to GitHub (`> @author wrote:`), not a drawn actor"),
@@ -44,7 +44,6 @@ const ACTOR_ALLOWLIST: [(&str, usize, &str); 28] = [
     ("pr_metadata_member_picker.rs", 1, "picker header: signed-in account"),
     ("pr_metadata_native.rs", 1, "metadata preview: signed-in actor with numeric account"),
     ("pr_metadata_picker.rs", 3, "picker header account; exact account echo under the identity row"),
-    ("pr_metadata_picker_neutral_seam.rs", 2, "exact assignee/reviewer account echo"),
     ("remote_repository_v1.rs", 1, "remote repository title: signed-in account"),
     ("repository_catalogue_workspace_v1.rs", 1, "observed signed-in account"),
     ("scoped_actions_dispatch_ui_v7.rs", 1, "signed-in principal context of the dispatch form"),
