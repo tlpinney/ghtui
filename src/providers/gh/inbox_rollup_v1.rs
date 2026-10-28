@@ -10,7 +10,7 @@
 //! The same read also lists the PR's reviewers for the Inbox preview: requested reviewers,
 //! the latest review of each reviewer, and recent commenters (bots included).
 use super::{error, validate_repo, Actor, GithubErrorKind, GithubProvider, GithubResult};
-use crate::providers::runner::CancellationToken;
+use crate::providers::runner::{CancellationToken, CommandFailure, FailureKind};
 use serde_json::Value;
 
 /// PRs per GraphQL call. Fifty aliased `repository.pullRequest` lookups stay far inside
@@ -198,6 +198,18 @@ fn reviewers(pr: &Value) -> Vec<InboxReviewerV1> {
     entries
 }
 
+/// Whether `gh` exited because GitHub answered the query with GraphQL errors and no data,
+/// as a schema without one of the requested fields or types does.
+fn graphql_rejection(failure: &CommandFailure) -> bool {
+    failure.kind == FailureKind::Exit
+        && serde_json::from_slice::<Value>(&failure.stdout).is_ok_and(|body| {
+            body.get("errors")
+                .and_then(Value::as_array)
+                .is_some_and(|errors| !errors.is_empty())
+                && body.get("data").is_none_or(Value::is_null)
+        })
+}
+
 /// Reads one response. A null alias (PR missing or not visible) yields no row.
 pub fn parse_inbox_rollup_v1(
     targets: &[(&str, u64)],
@@ -263,23 +275,28 @@ impl GithubProvider {
                 ));
             }
         }
-        let read = |args: Vec<String>, with_reviewers: bool| {
-            let bytes = self.execute(args, None, None, cancel)?;
-            let response: Value = serde_json::from_slice(&bytes)
+        let parse = |bytes: &[u8], with_reviewers: bool| {
+            let response: Value = serde_json::from_slice(bytes)
                 .map_err(|e| error(GithubErrorKind::Json, e.to_string()))?;
             parse_rollup(targets, &response, with_reviewers)
         };
-        match read(inbox_rollup_args_v1(&self.host, targets), true) {
-            // A GraphQL rejection (gh exits without an HTTP status); network and HTTP
-            // failures are not retried.
-            Err(failure)
-                if matches!(failure.kind, GithubErrorKind::Transport)
-                    && !failure.message.contains("HTTP ")
-                    && !cancel.is_cancelled() =>
-            {
-                read(inbox_rollup_status_args_v1(&self.host, targets), false)
+        match self
+            .runner
+            .run(self.spec(inbox_rollup_args_v1(&self.host, targets)), cancel)
+        {
+            Ok(output) => parse(&output.stdout, true),
+            // Only GitHub rejecting the document itself (gh exits with a GraphQL `errors`
+            // body and no data) is retried; network, HTTP and timeout failures are not.
+            Err(failure) if graphql_rejection(&failure) && !cancel.is_cancelled() => {
+                let bytes = self.execute(
+                    inbox_rollup_status_args_v1(&self.host, targets),
+                    None,
+                    None,
+                    cancel,
+                )?;
+                parse(&bytes, false)
             }
-            result => result,
+            Err(failure) => Err(failure.into()),
         }
     }
 }

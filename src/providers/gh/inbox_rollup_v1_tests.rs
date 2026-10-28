@@ -126,7 +126,11 @@ fn inbox_rollup_v1_falls_back_to_status_only_when_the_server_rejects_reviewer_fi
         inbox_rollup_status_query_v1(&targets),
         "query{p0:repository(owner:\"org\",name:\"alpha\"){pullRequest(number:7){reviewDecision commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}}}}"
     );
-    let mut rejected = GhStep::read(&full, "");
+    // What gh prints for a schema rejection: GraphQL errors on stdout, no data, exit 1.
+    let mut rejected = GhStep::read(
+        &full,
+        r#"{"errors":[{"message":"Fragment on Bot can't be spread inside RequestedReviewer"}]}"#,
+    );
     rejected.status = 1;
     rejected.stderr = b"gh: Fragment on Bot can't be spread inside RequestedReviewer\n".to_vec();
     fixture.scripted_gh(&[
@@ -145,6 +149,26 @@ fn inbox_rollup_v1_falls_back_to_status_only_when_the_server_rejects_reviewer_fi
     // Reviewers were not read, which is not the same as "nobody".
     assert_eq!(rows[0].reviewers, None);
     assert_eq!(journal_lines(&fixture), 2);
+}
+
+#[test]
+fn inbox_rollup_v1_does_not_retry_network_failures() {
+    let fixture = Fixture::new();
+    let targets = [("org/alpha", 7)];
+    let full = inbox_rollup_args_v1("github.invalid", &targets);
+    let full: Vec<&str> = full.iter().map(String::as_str).collect();
+    let mut offline = GhStep::read(&full, "");
+    offline.status = 1;
+    offline.stderr = b"error connecting to github.invalid\ncheck your internet connection or https://githubstatus.com\n".to_vec();
+    fixture.scripted_gh(&[offline]);
+    assert!(provider(&fixture)
+        .inbox_rollup_v1(&targets, &CancellationToken::default())
+        .is_err());
+    assert_eq!(
+        journal_lines(&fixture),
+        1,
+        "no status-only retry when offline"
+    );
 }
 
 #[test]
@@ -258,11 +282,17 @@ fn inbox_rollup_v1_workspace_load_batches_every_row_and_keeps_failures_unknown()
         GhStep::read(&args, &json!({ "data": data }).to_string()),
         failed,
     ]);
+    // Reviewers read by an earlier load for the row whose batch now fails.
+    let (missing_repo, missing_number) = last[0];
+    let stale = row_key("github.invalid", missing_repo, missing_number);
+    github.inbox_reviewers_v1.insert(stale.clone(), Vec::new());
     let cancel = CancellationToken::default();
     github.load_inbox_rollup_v1(&provider(&fixture), &cancel);
     assert_eq!(journal_lines(&fixture), 2);
+    // They are dropped rather than shown as current; the 50 read rows have fresh ones.
+    assert!(!github.inbox_reviewers_v1.contains_key(&stale));
+    assert_eq!(github.inbox_reviewers_v1.len(), 50);
     assert_eq!(github.inbox_rollup_v1.len(), 50);
-    let (missing_repo, missing_number) = last[0];
     assert!(!github.inbox_rollup_v1.contains_key(&row_key(
         "github.invalid",
         missing_repo,

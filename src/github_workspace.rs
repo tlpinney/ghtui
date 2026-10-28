@@ -1925,6 +1925,17 @@ impl GithubWorkspace {
             }
             let batch: Vec<(&str, u64)> = chunk.iter().map(|(r, n)| (r.as_str(), *n)).collect();
             let Ok(rows) = provider.inbox_rollup_v1(&batch, cancel) else {
+                // A failed batch keeps its status rollups (they read as stale once the queue
+                // shows a newer update), but reviewers carry no such check: drop them, so the
+                // preview says "Not loaded yet" instead of showing an old review state.
+                for (repository, number) in &batch {
+                    self.inbox_reviewers_v1
+                        .remove(&crate::inbox_status_v1::row_key(
+                            &self.identity.host,
+                            repository,
+                            *number,
+                        ));
+                }
                 continue;
             };
             for row in rows {
